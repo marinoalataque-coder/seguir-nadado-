@@ -12,7 +12,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Estilos CSS optimizados para pantalla de celular en el natatorio
 st.markdown("""
     <style>
     .block-container {
@@ -82,24 +81,23 @@ st.markdown("""
 st.markdown("### 🏊‍♂️ Rastreador FENBAS")
 st.caption("Consulta rápida de tiempos y series en vivo desde el natatorio.")
 
-# Formulario principal directo en pantalla (sin depender del menú lateral oculto en móviles)
 with st.form("form_busqueda"):
     nombre_nadadora = st.text_input(
-        "Apellido y/o Nombre del Nadador/a",
-        value="",
-        placeholder="Ej: GARCIA MARIA"
+        "Nombre o Apellido (ej: Lena Marino o solo Marino)",
+        value="Lena Marino",
+        placeholder="Ej: LENA MARINO"
     )
     
-    with st.expander("⚙️ Cambiar URL del Torneo (actual: Torneo 156)"):
-        url_torneo = st.text_input(
-            "URL del índice (index.htm)",
-            value="https://fenbas.com.ar/resultados_online/156/index.htm"
-        )
+    url_torneo = st.text_input(
+        "URL del Torneo actual (index.htm)",
+        value="https://fenbas.com.ar/resultados_online/156/index.htm",
+        help="¡Atención! Verificá que sea la URL del torneo que se está nadando hoy."
+    )
         
     buscar_btn = st.form_submit_button("🔍 BUSCAR RESULTADOS", type="primary")
 
 def revisar_prueba(args):
-    url_prueba, nombre, headers = args
+    url_prueba, palabras_clave, headers = args
     resultados_prueba = []
     try:
         res_prueba = requests.get(url_prueba, headers=headers, timeout=8)
@@ -110,10 +108,15 @@ def revisar_prueba(args):
         nombre_prueba = titulo_prueba.text.strip() if titulo_prueba else "Prueba"
         
         texto_pagina = soup_prueba.get_text()
-        if nombre.upper() in texto_pagina.upper():
+        
+        # Verificamos si TODas las palabras clave están presentes en la página
+        texto_upper = texto_pagina.upper()
+        if all(p in texto_upper for p in palabras_clave):
             lineas = texto_pagina.split('\n')
             for linea in lineas:
-                if nombre.upper() in linea.upper():
+                linea_upper = linea.upper()
+                # Si la línea contiene todas las palabras (ej: "MARINO", "LENA")
+                if all(p in linea_upper for p in palabras_clave):
                     resultados_prueba.append({
                         'Prueba': nombre_prueba,
                         'Detalle / Resultado': linea.strip(),
@@ -123,8 +126,8 @@ def revisar_prueba(args):
         pass
     return resultados_prueba
 
-@st.cache_data(ttl=120, show_spinner=False)
-def obtener_resultados_fenbas(url_index, nombre):
+@st.cache_data(ttl=60, show_spinner=False)
+def obtener_resultados_fenbas(url_index, palabras_clave):
     base_url = url_index.rsplit('/', 1)[0] + '/'
     headers = {'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36'}
     
@@ -147,44 +150,58 @@ def obtener_resultados_fenbas(url_index, nombre):
         and 'relays' not in link['href'].lower()
     ]))
     
-    tareas = [(url, nombre, headers) for url in pruebas_links]
+    tareas = [(url, palabras_clave, headers) for url in pruebas_links]
     with ThreadPoolExecutor(max_workers=12) as executor:
         for res in executor.map(revisar_prueba, tareas):
             hallazgos.extend(res)
             
-    return None, hallazgos
+    // Eliminar duplicados exactos si la línea aparece repetida
+    hallazgos_unicos = []
+    vistos = set()
+    for h in hallazgos:
+        clave_unica = (h['Prueba'], h['Detalle / Resultado'])
+        if clave_unica not in vistos:
+            vistos.add(clave_unica)
+            hallazgos_unicos.append(h)
+            
+    return None, hallazgos_unicos
 
 if buscar_btn:
     if not url_torneo or not nombre_nadadora.strip():
-        st.warning("Ingresá el apellido o nombre del nadador/a.")
+        st.warning("Completá la URL y el nombre.")
     else:
-        with st.spinner(f"Rastreando a {nombre_nadadora.upper()}..."):
-            error, resultados = obtener_resultados_fenbas(url_torneo.strip(), nombre_nadadora.strip())
-            
-        if error:
-            st.error(error)
-        elif not resultados:
-            st.info(f"Sin resultados todavía para '{nombre_nadadora}'.")
+        # Dividir el nombre en palabras clave individuales (ej: ["LENA", "MARINO", "MENNA"])
+        palabras = [p.upper() for p in nombre_nadadora.strip().split() if len(p) > 1]
+        
+        if not palabras:
+            st.warning("Ingresá un nombre válido.")
         else:
-            st.success(f"✅ {len(resultados)} resultado(s) encontrado(s)")
-            
-            # Tarjetas verticales fáciles de leer en pantalla vertical sin scroll horizontal
-            for item in resultados:
-                st.markdown(f"""
-                <div class="result-card">
-                    <div class="result-title">{item['Prueba']}</div>
-                    <div class="result-detail">{item['Detalle / Resultado']}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            df = pd.DataFrame(resultados)
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name='Resultados')
-            
-            st.download_button(
-                label="📥 Descargar planilla Excel (.xlsx)",
-                data=output.getvalue(),
-                file_name=f"FENBAS_{nombre_nadadora.strip().replace(' ', '_')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            with st.spinner(f"Buscando a {nombre_nadadora.upper()}..."):
+                error, resultados = obtener_resultados_fenbas(url_torneo.strip(), palabras)
+                
+            if error:
+                st.error(error)
+            elif not resultados:
+                st.info(f"No se encontraron registros para '{nombre_nadadora}' en este torneo.\n\n💡 Consejo: Asegurate de que la URL corresponda al torneo actual y probá buscando solo por el apellido (ej: 'Marino' o 'Menna').")
+            else:
+                st.success(f"✅ ¡{len(resultados)} resultado(s) encontrado(s)!")
+                
+                for item in resultados:
+                    st.markdown(f"""
+                    <div class="result-card">
+                        <div class="result-title">{item['Prueba']}</div>
+                        <div class="result-detail">{item['Detalle / Resultado']}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                df = pd.DataFrame(resultados)
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False, sheet_name='Resultados')
+                
+                st.download_button(
+                    label="📥 Descargar planilla Excel (.xlsx)",
+                    data=output.getvalue(),
+                    file_name=f"FENBAS_{nombre_nadadora.strip().replace(' ', '_')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
